@@ -2,17 +2,25 @@ import type { VercelRequest, VercelResponse } from '@vercel/node';
 import Anthropic from '@anthropic-ai/sdk';
 import { createClient } from '@supabase/supabase-js';
 
-async function verifyAuth(req: VercelRequest): Promise<string | null> {
+type AuthResult = { userId: string; error?: never } | { userId?: never; error: string };
+
+async function verifyAuth(req: VercelRequest): Promise<AuthResult> {
   const authHeader = req.headers.authorization;
-  if (!authHeader?.startsWith('Bearer ')) return null;
+  if (!authHeader?.startsWith('Bearer ')) {
+    return { error: 'Missing or malformed Authorization header' };
+  }
   const token = authHeader.slice(7);
   const supabaseUrl = process.env.SUPABASE_URL;
   const supabaseServiceKey = process.env.SUPABASE_SERVICE_KEY;
-  if (!supabaseUrl || !supabaseServiceKey) return null;
+  if (!supabaseUrl || !supabaseServiceKey) {
+    return { error: `Server config missing: ${!supabaseUrl ? 'SUPABASE_URL' : ''} ${!supabaseServiceKey ? 'SUPABASE_SERVICE_KEY' : ''}`.trim() };
+  }
   const supabase = createClient(supabaseUrl, supabaseServiceKey);
   const { data: { user }, error } = await supabase.auth.getUser(token);
-  if (error || !user) return null;
-  return user.id;
+  if (error || !user) {
+    return { error: `Token validation failed: ${error?.message ?? 'no user returned'}` };
+  }
+  return { userId: user.id };
 }
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
@@ -20,9 +28,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return res.status(405).json({ error: 'Method not allowed' });
   }
 
-  const userId = await verifyAuth(req);
-  if (!userId) {
-    return res.status(401).json({ error: 'Unauthorized' });
+  const auth = await verifyAuth(req);
+  if (auth.error) {
+    return res.status(401).json({ error: auth.error });
   }
 
   const { reputation, streak, level, completionRate, daysActive } = req.body ?? {};
